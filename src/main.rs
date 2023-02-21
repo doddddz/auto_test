@@ -1,4 +1,4 @@
-use std::{sync::{mpsc, Arc}, process::{Command, Stdio}, io::Write};
+use std::{sync::{mpsc, Arc, atomic}, process::{Command, Stdio}, io::Write, path::PathBuf};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use structopt::StructOpt;
@@ -12,6 +12,7 @@ async fn main() -> Res {
     println!("{:?}", &opt);
     let name = Arc::new(opt.test_part_name);
     let counter = Arc::new(Semaphore::new(opt.concurrency as _));
+    let timestamp = chrono::offset::Local::now().timestamp();
 
     let (sender, receiver) = mpsc::channel::<TestRes>();
 
@@ -34,12 +35,15 @@ async fn main() -> Res {
         }
     });
 
+    let log_count_row = Arc::new(atomic::AtomicU32::new(0));
+
     for _ in 0..opt.repeat_times {
         let n = name.clone();
         let sd = sender.clone();
         let c = counter.clone();
+        let log_count = log_count_row.clone();
         tokio::spawn(async move {
-            let _ = c.acquire_owned().await.unwrap();
+            let _permission = c.acquire_owned().await.unwrap();
 
             let cmd = Command::new("go")
                 .args(&["test", "--run", &n[..]])
@@ -55,11 +59,12 @@ async fn main() -> Res {
                 let _ = sd.send(match status {
                     "ok" => TestRes::Pass,
                     _ => {
-                        let timestamp = chrono::offset::Local::now();
+                        std::fs::create_dir_all(format!("{n}-{timestamp}")).unwrap();
+                        let lc = log_count.fetch_add(1, atomic::Ordering::SeqCst);
                         let mut f = std::fs::OpenOptions::new()
                             .write(true)
                             .create(true)
-                            .open(format!("err-{timestamp}.log"))
+                            .open(PathBuf::from(format!("./{n}-{timestamp}/fail-{lc}.log")))
                             .unwrap();
                         f.write(s.as_bytes()).unwrap();
                         TestRes::Fail
@@ -74,7 +79,7 @@ async fn main() -> Res {
     Ok(())
 }
 
-#[derive(StructOpt, Debug)]
+#[derive(StructOpt, Debug, Clone)]
 pub struct Opt {
     #[structopt(short, long, default_value = "500")]
     repeat_times: u64,
