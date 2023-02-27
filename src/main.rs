@@ -1,6 +1,6 @@
-use std::{sync::{mpsc, Arc, atomic}, process::{Command, Stdio}, io::Write, path::PathBuf};
+use std::{sync::{mpsc, Arc, atomic}, process::{Command, Stdio}, path::PathBuf, io::Write};
 
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle, ProgressState};
 use structopt::StructOpt;
 use tokio::sync::Semaphore;
 
@@ -19,11 +19,13 @@ async fn main() -> Res {
     let cor = tokio::spawn(async move {
         let bar = ProgressBar::new(opt.repeat_times);
         bar.set_style(ProgressStyle::with_template(
-            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}"
-        ).unwrap().progress_chars("##-"));
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] [{pos:>7}/{len:7}] {msg} {eta}"
+        ).unwrap().with_key("eta", |state: &ProgressState, w: &mut dyn std::fmt::Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
+        .progress_chars("#>-"));
 
         let mut pass = 0;
         let mut fail = 0;
+        bar.set_position(0);
         for _ in 0..opt.repeat_times {
             let res = receiver.recv().unwrap();
             match res {
@@ -32,6 +34,11 @@ async fn main() -> Res {
             }
             bar.set_message(format!("[PASS/FAIL] [{pass}/{fail}]"));
             bar.inc(1);
+        }
+        if pass == opt.repeat_times {
+            bar.finish_with_message(format!("Congratulations, repeat {} times passed all of the test", opt.repeat_times))
+        } else {
+            bar.finish_with_message(format!("Passed: {pass}, Fail: {fail}"))
         }
     });
 
@@ -59,12 +66,12 @@ async fn main() -> Res {
                 let _ = sd.send(match status {
                     "ok" => TestRes::Pass,
                     _ => {
-                        std::fs::create_dir_all(format!("{n}-{timestamp}")).unwrap();
+                        std::fs::create_dir_all(format!("./log/{n}-{timestamp}")).unwrap();
                         let lc = log_count.fetch_add(1, atomic::Ordering::SeqCst);
                         let mut f = std::fs::OpenOptions::new()
                             .write(true)
                             .create(true)
-                            .open(PathBuf::from(format!("./{n}-{timestamp}/fail-{lc}.log")))
+                            .open(PathBuf::from(format!("./log/{n}-{timestamp}/fail-{lc}.log")))
                             .unwrap();
                         f.write(s.as_bytes()).unwrap();
                         TestRes::Fail
